@@ -1,7 +1,7 @@
 """
 agentTumx - GUI Terminal Workspace (PyQt6)
 """
-import sys, os, json, re
+import sys, os, json, re, queue
 from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QSplitter, QTextEdit,
@@ -49,16 +49,16 @@ def ansi_to_html(text):
     return "".join(out)
 
 class TerminalTab(QWidget):
-    """A single terminal tab: process + output display."""
+    """A single terminal tab: subprocess shell + output display."""
 
     def __init__(self, shell="cmd.exe", cwd=None):
         super().__init__()
         self.shell = shell
         self.cwd = cwd or str(Path.home())
-        self.process = QProcess(self)
-        self.process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
-        self.process.readyReadStandardOutput.connect(self._read_out)
-        self.process.finished.connect(lambda: self._append("[进程已退出]\n", "gray"))
+        self._proc = None
+        self._buffer = ""
+        self._alive = True
+        self._write_queue = queue.Queue()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -69,108 +69,132 @@ class TerminalTab(QWidget):
         self.output.setStyleSheet("background:#1e1e1e; color:#d4d4d4; border:none;")
         self.output.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.output.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.output._buffer = ""
         layout.addWidget(self.output)
 
-        # Install event filter on self and output to capture all keystrokes
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.installEventFilter(self)
-        self.output.installEventFilter(self)
 
-        self.process.start(shell, [])
-        QTimer.singleShot(100, self.setFocus)
+        # Start shell via subprocess
+        import subprocess as sp
+        self._proc = sp.Popen(
+            shell,
+            stdin=sp.PIPE,
+            stdout=sp.PIPE,
+            stderr=sp.STDOUT,
+            cwd=self.cwd,
+            shell=True,
+            bufsize=0,
+        )
 
-    def eventFilter(self, obj, event):
-        t = event.type()
-        if t == event.Type.KeyPress:
-            return self._handle_key(event)
-        if t == event.Type.KeyRelease:
-            return True
-        if t in (event.Type.MouseButtonPress, event.Type.MouseButtonDblClick):
-            self.setFocus()
-            return True
-        return super().eventFilter(obj, event)
+        # Reader thread
+        import threading as th
+        self._reader_th = th.Thread(target=self._reader_loop, daemon=True)
+        self._reader_th.start()
+
+        # Writer thread
+        self._writer_th = th.Thread(target=self._writer_loop, daemon=True)
+        self._writer_th.start()
+
+        # Poll timer for display updates
+        QTimer.singleShot(200, self.setFocus)
+        self._poll_timer = QTimer(self)
+        self._poll_timer.timeout.connect(self._update_display)
+        self._poll_timer.start(50)
+
+    def _reader_loop(self):
+        try:
+            while self._alive and self._proc and self._proc.stdout:
+                data = self._proc.stdout.read(4096)
+                if not data:
+                    break
+                self._buffer += data.decode("utf-8", errors="replace")
+                if len(self._buffer) > 100000:
+                    self._buffer = self._buffer[-50000:]
+        except:
+            pass
+
+    def _writer_loop(self):
+        try:
+            while self._alive and self._proc and self._proc.stdin:
+                text = self._write_queue.get()
+                if text is None:
+                    break
+                self._proc.stdin.write(text.encode("utf-8"))
+                self._proc.stdin.flush()
+        except:
+            pass
+
+    def _update_display(self):
+        if not self._buffer:
+            return
+        html = ansi_to_html(self._buffer)
+        self.output.setHtml(f'<pre style="font-family:Consolas,Courier New;font-size:10pt;color:#d4d4d4;margin:0;">{html}</pre>')
+        self.output.moveCursor(QTextCursor.MoveOperation.End)
+
+    def keyPressEvent(self, event):
+        if self._process_key(event):
+            event.accept()
+        else:
+            super().keyPressEvent(event)
+
+    def mousePressEvent(self, event):
+        self.setFocus()
+        super().mousePressEvent(event)
 
     def focusInEvent(self, event):
         self.output.moveCursor(QTextCursor.MoveOperation.End)
         super().focusInEvent(event)
 
-    def _handle_key(self, event):
+    def _process_key(self, event):
         key = event.key()
         mod = event.modifiers()
         ctrl = bool(mod & Qt.KeyboardModifier.ControlModifier)
 
-        # App shortcuts - let them propagate
-        if ctrl and key in (Qt.Key.Key_N, Qt.Key.Key_W, Qt.Key.Key_B, Qt.Key.Key_Q):
-            return False
-        if ctrl and key == Qt.Key.Key_Tab:
+        if ctrl and key in (Qt.Key.Key_N, Qt.Key.Key_W, Qt.Key.Key_B, Qt.Key.Key_Q, Qt.Key.Key_Tab):
             return False
 
-        # Copy with selection
         if ctrl and key == Qt.Key.Key_C:
             if self.output.textCursor().hasSelection():
                 self.output.copy()
                 return True
             self._send("\x03"); return True
 
-        # Paste
         if ctrl and key == Qt.Key.Key_V:
             txt = QApplication.clipboard().text()
             if txt: self._send(txt)
             return True
 
-        # Special keys
-        k = event.key()
-        s = None
-        if k == Qt.Key.Key_Return or k == Qt.Key.Key_Enter: s = "\r"
-        elif k == Qt.Key.Key_Backspace: s = "\x7f"
-        elif k == Qt.Key.Key_Tab: s = "\t"
-        elif k == Qt.Key.Key_Escape: s = "\x1b"
-        elif k == Qt.Key.Key_Delete: s = "\x1b[3~"
-        elif k == Qt.Key.Key_Up: s = "\x1b[A"
-        elif k == Qt.Key.Key_Down: s = "\x1b[B"
-        elif k == Qt.Key.Key_Left: s = "\x1b[D"
-        elif k == Qt.Key.Key_Right: s = "\x1b[C"
-        elif k == Qt.Key.Key_Home: s = "\x1b[H"
-        elif k == Qt.Key.Key_End: s = "\x1b[F"
-        elif k == Qt.Key.Key_PageUp: s = "\x1b[5~"
-        elif k == Qt.Key.Key_PageDown: s = "\x1b[6~"
-        if s is not None:
-            self._send(s); return True
+        km = {
+            Qt.Key.Key_Return: "\r", Qt.Key.Key_Enter: "\r",
+            Qt.Key.Key_Backspace: "\x7f", Qt.Key.Key_Tab: "\t",
+            Qt.Key.Key_Escape: "\x1b", Qt.Key.Key_Delete: "\x1b[3~",
+            Qt.Key.Key_Up: "\x1b[A", Qt.Key.Key_Down: "\x1b[B",
+            Qt.Key.Key_Left: "\x1b[D", Qt.Key.Key_Right: "\x1b[C",
+            Qt.Key.Key_Home: "\x1b[H", Qt.Key.Key_End: "\x1b[F",
+            Qt.Key.Key_PageUp: "\x1b[5~", Qt.Key.Key_PageDown: "\x1b[6~",
+        }
+        if key in km:
+            self._send(km[key]); return True
 
-        # Ctrl+letter
-        if ctrl and Qt.Key.Key_A <= k <= Qt.Key.Key_Z:
-            self._send(chr(k & 0x1f)); return True
+        if ctrl and Qt.Key.Key_A <= key <= Qt.Key.Key_Z:
+            self._send(chr(key & 0x1f)); return True
 
-        # Regular chars
-        text = event.text()
-        if text:
-            self._send(text)
+        t = event.text()
+        if t:
+            self._send(t)
             return True
 
         return False
 
     def _send(self, text):
-        if self.process.state() == QProcess.ProcessState.Running:
-            self.process.write(text.encode("utf-8"))
-
-    def _read_out(self):
-        data = self.process.readAllStandardOutput().data().decode("utf-8", errors="replace")
-        self._append(data)
-
-    def _append(self, text, fallback="#d4d4d4"):
-        self.output._buffer += text
-        if len(self.output._buffer) > 100000:
-            self.output._buffer = self.output._buffer[-50000:]
-        html = ansi_to_html(self.output._buffer)
-        self.output.setHtml(f'<pre style="font-family:Consolas,Courier New;font-size:10pt;color:{fallback};margin:0;">{html}</pre>')
-        self.output.moveCursor(QTextCursor.MoveOperation.End)
+        if self._alive:
+            self._write_queue.put(text)
 
     def close_process(self):
-        if self.process.state() == QProcess.ProcessState.Running:
-            self.process.terminate()
-            if not self.process.waitForFinished(2000):
-                self.process.kill()
+        self._alive = False
+        if self._proc:
+            self._proc.terminate()
+            try: self._proc.wait(timeout=3)
+            except: self._proc.kill()
 
 
 class Sidebar(QTreeWidget):
