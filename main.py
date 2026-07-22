@@ -48,72 +48,6 @@ def ansi_to_html(text):
                     elif c == 1: st.append("font-weight:bold")
     return "".join(out)
 
-_key_map = {
-    Qt.Key.Key_Return: "\r", Qt.Key.Key_Backspace: "\x7f", Qt.Key.Key_Tab: "\t",
-    Qt.Key.Key_Escape: "\x1b", Qt.Key.Key_Delete: "\x1b[3~",
-    Qt.Key.Key_Up: "\x1b[A", Qt.Key.Key_Down: "\x1b[B",
-    Qt.Key.Key_Left: "\x1b[D", Qt.Key.Key_Right: "\x1b[C",
-    Qt.Key.Key_Home: "\x1b[H", Qt.Key.Key_End: "\x1b[F",
-    Qt.Key.Key_PageUp: "\x1b[5~", Qt.Key.Key_PageDown: "\x1b[6~",
-}
-
-
-class TerminalEdit(QTextEdit):
-    """QTextEdit that forwards all keystrokes to a shell process."""
-
-    def __init__(self, process: QProcess):
-        super().__init__()
-        self.proc = process
-        self.setReadOnly(False)
-        self.setFont(QFont("Cascadia Code, Consolas, Courier New", 10))
-        self.setStyleSheet("background:#1e1e1e; color:#d4d4d4; border:none;")
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.setAcceptRichText(False)
-        self._buffer = ""
-
-
-    def keyPressEvent(self, event):
-        key = event.key()
-        mod = event.modifiers()
-        ctrl = bool(mod & Qt.KeyboardModifier.ControlModifier)
-
-        # App shortcuts (handled by global shortcuts, don't forward)
-        if ctrl and key in (Qt.Key.Key_N, Qt.Key.Key_W, Qt.Key.Key_B, Qt.Key.Key_Q, Qt.Key.Key_Tab):
-            super().keyPressEvent(event)
-            return
-
-        # Ctrl+Shift+C/V for copy/paste
-        if ctrl and key == Qt.Key.Key_C:
-            if self.textCursor().hasSelection():
-                super().keyPressEvent(event)
-                return
-            self._write("\x03"); return
-        if ctrl and key == Qt.Key.Key_V:
-            txt = QApplication.clipboard().text()
-            if txt: self._write(txt)
-            return
-
-        # Navigation / special keys
-        if key in _key_map:
-            self._write(_key_map[key]); return
-
-        # Ctrl+letter
-        if ctrl and Qt.Key.Key_A <= key <= Qt.Key.Key_Z:
-            self._write(chr(key & 0x1f)); return
-
-        # Printable characters
-        text = event.text()
-        if text:
-            self._write(text)
-            return
-
-        super().keyPressEvent(event)
-
-    def _write(self, text):
-        if self.proc and self.proc.state() == QProcess.ProcessState.Running:
-            self.proc.write(text.encode("utf-8"))
-
-
 class TerminalTab(QWidget):
     """A single terminal tab: process + output display."""
 
@@ -128,11 +62,92 @@ class TerminalTab(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        self.output = TerminalEdit(self.process)
-        self.output.setReadOnly(False)
+
+        self.output = QTextEdit(self)
+        self.output.setReadOnly(True)
+        self.output.setFont(QFont("Cascadia Code, Consolas, Courier New", 10))
+        self.output.setStyleSheet("background:#1e1e1e; color:#d4d4d4; border:none;")
+        self.output.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.output.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.output._buffer = ""
         layout.addWidget(self.output)
 
+        # Install event filter to capture all keystrokes
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.installEventFilter(self)
+
         self.process.start(shell, [])
+
+    def eventFilter(self, obj, event):
+        if event.type() == event.Type.KeyPress:
+            return self._handle_key(event)
+        if event.type() == event.Type.MouseButtonPress:
+            self.setFocus()
+            return True
+        return super().eventFilter(obj, event)
+
+    def focusInEvent(self, event):
+        self.output.moveCursor(QTextCursor.MoveOperation.End)
+        super().focusInEvent(event)
+
+    def _handle_key(self, event):
+        key = event.key()
+        mod = event.modifiers()
+        ctrl = bool(mod & Qt.KeyboardModifier.ControlModifier)
+
+        # App shortcuts - let them propagate
+        if ctrl and key in (Qt.Key.Key_N, Qt.Key.Key_W, Qt.Key.Key_B, Qt.Key.Key_Q):
+            return False
+        if ctrl and key == Qt.Key.Key_Tab:
+            return False
+
+        # Copy with selection
+        if ctrl and key == Qt.Key.Key_C:
+            if self.output.textCursor().hasSelection():
+                self.output.copy()
+                return True
+            self._send("\x03"); return True
+
+        # Paste
+        if ctrl and key == Qt.Key.Key_V:
+            txt = QApplication.clipboard().text()
+            if txt: self._send(txt)
+            return True
+
+        # Special keys
+        k = event.key()
+        s = None
+        if k == Qt.Key.Key_Return or k == Qt.Key.Key_Enter: s = "\r"
+        elif k == Qt.Key.Key_Backspace: s = "\x7f"
+        elif k == Qt.Key.Key_Tab: s = "\t"
+        elif k == Qt.Key.Key_Escape: s = "\x1b"
+        elif k == Qt.Key.Key_Delete: s = "\x1b[3~"
+        elif k == Qt.Key.Key_Up: s = "\x1b[A"
+        elif k == Qt.Key.Key_Down: s = "\x1b[B"
+        elif k == Qt.Key.Key_Left: s = "\x1b[D"
+        elif k == Qt.Key.Key_Right: s = "\x1b[C"
+        elif k == Qt.Key.Key_Home: s = "\x1b[H"
+        elif k == Qt.Key.Key_End: s = "\x1b[F"
+        elif k == Qt.Key.Key_PageUp: s = "\x1b[5~"
+        elif k == Qt.Key.Key_PageDown: s = "\x1b[6~"
+        if s is not None:
+            self._send(s); return True
+
+        # Ctrl+letter
+        if ctrl and Qt.Key.Key_A <= k <= Qt.Key.Key_Z:
+            self._send(chr(k & 0x1f)); return True
+
+        # Regular chars
+        text = event.text()
+        if text:
+            self._send(text)
+            return True
+
+        return False
+
+    def _send(self, text):
+        if self.process.state() == QProcess.ProcessState.Running:
+            self.process.write(text.encode("utf-8"))
 
     def _read_out(self):
         data = self.process.readAllStandardOutput().data().decode("utf-8", errors="replace")
