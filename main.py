@@ -124,7 +124,7 @@ class TerminalTab(QWidget):
         self.process = QProcess(self)
         self.process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         self.process.readyReadStandardOutput.connect(self._read_out)
-        self.process.finished.connect(lambda: self._append("[exited]\n", "gray"))
+        self.process.finished.connect(lambda: self._append("[进程已退出]\n", "gray"))
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -171,7 +171,7 @@ class Sidebar(QTreeWidget):
         def add_group(name):
             g = QTreeWidgetItem(self, [name]); g.setForeground(0, QColor("#4ec9b0"))
             f = g.font(0); f.setBold(True); g.setFont(0, f); return g
-        ws = add_group("WORKSPACE")
+        ws = add_group("工作区")
         for p in cfg.get("projects", []):
             QTreeWidgetItem(ws, [f"  {os.path.basename(p.rstrip('/\\'))}"])
         if cfg.get("ssh_hosts"):
@@ -220,20 +220,20 @@ class MainWindow(QMainWindow):
 
         menubar = self.menuBar()
         menubar.setStyleSheet("QMenuBar{background:#2d2d2d;color:#ccc;} QMenuBar::item:selected{background:#333;}")
-        m = menubar.addMenu("&File")
+        m = menubar.addMenu("&文件")
         def mk_action(text, slot, shortcut=None):
             a = QAction(text, self)
             a.triggered.connect(slot)
             if shortcut: a.setShortcut(QKeySequence(shortcut))
             return a
-        m.addAction(mk_action("New Tab", self.new_tab, "Ctrl+N"))
-        m.addAction(mk_action("Close Tab", self.close_tab, "Ctrl+W"))
-        m.addAction(mk_action("Toggle Sidebar", self.toggle_sidebar, "Ctrl+B"))
+        m.addAction(mk_action("新建标签", self.new_tab, "Ctrl+N"))
+        m.addAction(mk_action("关闭标签", self.close_tab, "Ctrl+W"))
+        m.addAction(mk_action("切换侧边栏", self.toggle_sidebar, "Ctrl+B"))
         m.addSeparator()
-        m.addAction(mk_action("Quit", self.close, "Ctrl+Q"))
-        m2 = menubar.addMenu("&Tools")
-        m2.addAction(mk_action("SSH Connect...", self.ssh_dialog))
-        m2.addAction(mk_action("Add Project...", self.add_project_dialog))
+        m.addAction(mk_action("退出", self.close, "Ctrl+Q"))
+        m2 = menubar.addMenu("&工具")
+        m2.addAction(mk_action("SSH 连接...", self.ssh_dialog))
+        m2.addAction(mk_action("添加项目...", self.add_project_dialog))
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         self.sidebar = Sidebar()
@@ -250,16 +250,16 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(splitter)
         self.status = QStatusBar()
         self.setStatusBar(self.status)
-        self.status.showMessage("agentTumx  |  Ctrl+N new tab  Ctrl+W close  Ctrl+B sidebar  Ctrl+Q quit")
-        self.new_tab("cmd")
+        self.status.showMessage("agentTumx  |  Ctrl+N 新建  Ctrl+W 关闭  Ctrl+B 侧边栏  Ctrl+Q 退出")
+        self.new_tab("终端")
 
     def _init_tray(self):
         self.tray = QSystemTrayIcon(self)
         self.tray.setToolTip("agentTumx")
         m = QMenu()
-        m.addAction("Show/Hide", self.toggle_win)
+        m.addAction("显示/隐藏", self.toggle_win)
         m.addSeparator()
-        m.addAction("Quit", self.close)
+        m.addAction("退出", self.close)
         self.tray.setContextMenu(m)
         self.tray.activated.connect(lambda r: self.toggle_win() if r == QSystemTrayIcon.ActivationReason.DoubleClick else None)
         self.tray.show()
@@ -279,7 +279,7 @@ class MainWindow(QMainWindow):
         t = TerminalTab(shell or "cmd.exe", cwd if cwd else str(Path.home()))
         idx = self.tabs.addTab(t, title)
         self.tabs.setCurrentIndex(idx)
-        self.status.showMessage(f"tab: {title}")
+        self.status.showMessage(f"标签: {title}")
         return t
 
     def close_tab(self):
