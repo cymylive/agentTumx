@@ -58,7 +58,7 @@ class TerminalTab(QWidget):
         self._proc = None
         self._buffer = ""
         self._alive = True
-        self._write_queue = queue.Queue()
+        self._input_buf = bytearray()  # line buffer for input
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -92,10 +92,6 @@ class TerminalTab(QWidget):
         self._reader_th = th.Thread(target=self._reader_loop, daemon=True)
         self._reader_th.start()
 
-        # Writer thread
-        self._writer_th = th.Thread(target=self._writer_loop, daemon=True)
-        self._writer_th.start()
-
         # Poll timer for display updates
         QTimer.singleShot(200, self.setFocus)
         self._poll_timer = QTimer(self)
@@ -111,17 +107,6 @@ class TerminalTab(QWidget):
                 self._buffer += data.decode("utf-8", errors="replace")
                 if len(self._buffer) > 100000:
                     self._buffer = self._buffer[-50000:]
-        except:
-            pass
-
-    def _writer_loop(self):
-        try:
-            while self._alive and self._proc and self._proc.stdin:
-                text = self._write_queue.get()
-                if text is None:
-                    break
-                self._proc.stdin.write(text.encode("utf-8"))
-                self._proc.stdin.flush()
         except:
             pass
 
@@ -151,45 +136,72 @@ class TerminalTab(QWidget):
         mod = event.modifiers()
         ctrl = bool(mod & Qt.KeyboardModifier.ControlModifier)
 
+        # Shortcuts pass through
         if ctrl and key in (Qt.Key.Key_N, Qt.Key.Key_W, Qt.Key.Key_B, Qt.Key.Key_Q, Qt.Key.Key_Tab):
             return False
 
+        # Ctrl+C: copy selection, or send EOT (line buffer) / INT (no buffer)
         if ctrl and key == Qt.Key.Key_C:
             if self.output.textCursor().hasSelection():
                 self.output.copy()
                 return True
-            self._send("\x03"); return True
-
-        if ctrl and key == Qt.Key.Key_V:
-            txt = QApplication.clipboard().text()
-            if txt: self._send(txt)
+            if self._input_buf:
+                self._flush_input()
+            self._raw_write(b"\x03")
             return True
 
-        km = {
-            Qt.Key.Key_Return: "\r", Qt.Key.Key_Enter: "\r",
-            Qt.Key.Key_Backspace: "\x7f", Qt.Key.Key_Tab: "\t",
-            Qt.Key.Key_Escape: "\x1b", Qt.Key.Key_Delete: "\x1b[3~",
-            Qt.Key.Key_Up: "\x1b[A", Qt.Key.Key_Down: "\x1b[B",
-            Qt.Key.Key_Left: "\x1b[D", Qt.Key.Key_Right: "\x1b[C",
-            Qt.Key.Key_Home: "\x1b[H", Qt.Key.Key_End: "\x1b[F",
-            Qt.Key.Key_PageUp: "\x1b[5~", Qt.Key.Key_PageDown: "\x1b[6~",
-        }
-        if key in km:
-            self._send(km[key]); return True
+        # Ctrl+V: paste
+        if ctrl and key == Qt.Key.Key_V:
+            txt = QApplication.clipboard().text()
+            if txt:
+                for ch in txt:
+                    self._input_buf.extend(ch.encode("utf-8"))
+            return True
 
-        if ctrl and Qt.Key.Key_A <= key <= Qt.Key.Key_Z:
-            self._send(chr(key & 0x1f)); return True
+        # Enter: flush input buffer as a line
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self._input_buf.extend(b"\r\n")
+            self._flush_input()
+            return True
 
+        # Backspace: remove last UTF-8 char from buffer
+        if key == Qt.Key.Key_Backspace:
+            if self._input_buf:
+                # Remove last UTF-8 character
+                for _ in range(4):
+                    if not self._input_buf: break
+                    self._input_buf.pop()
+                    if self._input_buf and self._input_buf[-1] < 0x80:
+                        break
+            return True
+
+        # Regular text - add to input buffer
         t = event.text()
         if t:
-            self._send(t)
+            self._input_buf.extend(t.encode("utf-8"))
             return True
 
         return False
 
-    def _send(self, text):
-        if self._alive:
-            self._write_queue.put(text)
+    def _flush_input(self):
+        """Send buffered input as a single write to the process."""
+        if not self._input_buf or not self._proc or not self._alive:
+            return
+        try:
+            self._proc.stdin.write(bytes(self._input_buf))
+            self._proc.stdin.flush()
+            self._input_buf.clear()
+        except Exception:
+            self._alive = False
+
+    def _raw_write(self, data: bytes):
+        """Send raw bytes directly to the process."""
+        if self._proc and self._alive:
+            try:
+                self._proc.stdin.write(data)
+                self._proc.stdin.flush()
+            except Exception:
+                self._alive = False
 
     def close_process(self):
         self._alive = False
