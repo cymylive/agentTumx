@@ -62,6 +62,7 @@ class TerminalTab(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
         self.output = QTextEdit(self)
         self.output.setReadOnly(True)
@@ -72,6 +73,7 @@ class TerminalTab(QWidget):
         layout.addWidget(self.output)
 
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
 
         # Start shell via subprocess
         import subprocess as sp
@@ -251,6 +253,9 @@ class MainWindow(QMainWindow):
         self._init_tray()
         self._init_shortcuts()
 
+        # Global key catcher - install on QApplication
+        QApplication.instance().installEventFilter(self)
+
     def _init_ui(self):
         self.setWindowTitle("agentTumx")
         self.setGeometry(100, 100, 1100, 750)
@@ -339,6 +344,14 @@ class MainWindow(QMainWindow):
     def next_tab(self):
         i = (self.tabs.currentIndex() + 1) % self.tabs.count()
         self.tabs.setCurrentIndex(i)
+
+    def eventFilter(self, obj, event):
+        """Global key catcher: forward KEY events (not shortcuts) to active terminal."""
+        if event.type() == event.Type.KeyPress:
+            tab = self.tabs.currentWidget()
+            if isinstance(tab, TerminalTab) and tab._process_key(event):
+                return True
+        return super().eventFilter(obj, event)
 
     def toggle_sidebar(self):
         v = not self.sidebar.isVisible()
