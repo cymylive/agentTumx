@@ -70,40 +70,41 @@ class TerminalEdit(QTextEdit):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setAcceptRichText(False)
         self._buffer = ""
-        self._cmd_mode = True  # True = command input mode, False = passthrough
+
 
     def keyPressEvent(self, event):
         key = event.key()
         mod = event.modifiers()
         ctrl = bool(mod & Qt.KeyboardModifier.ControlModifier)
-        shift = bool(mod & Qt.KeyboardModifier.ShiftModifier)
-        alt = bool(mod & Qt.KeyboardModifier.AltModifier)
 
-        # Ctrl+C/V for copy/paste
+        # App shortcuts (handled by global shortcuts, don't forward)
+        if ctrl and key in (Qt.Key.Key_N, Qt.Key.Key_W, Qt.Key.Key_B, Qt.Key.Key_Q, Qt.Key.Key_Tab):
+            super().keyPressEvent(event)
+            return
+
+        # Ctrl+Shift+C/V for copy/paste
         if ctrl and key == Qt.Key.Key_C:
             if self.textCursor().hasSelection():
                 super().keyPressEvent(event)
                 return
             self._write("\x03"); return
         if ctrl and key == Qt.Key.Key_V:
-            self._write(QApplication.clipboard().text()); return
+            txt = QApplication.clipboard().text()
+            if txt: self._write(txt)
+            return
 
-        # Navigation keys
+        # Navigation / special keys
         if key in _key_map:
             self._write(_key_map[key]); return
 
-        # Ctrl+A/Z/D/etc
+        # Ctrl+letter
         if ctrl and Qt.Key.Key_A <= key <= Qt.Key.Key_Z:
             self._write(chr(key & 0x1f)); return
 
-        # Regular chars
-        if key >= 0x20 and key <= 0x7e:
-            ch = chr(key)
-            if shift:
-                ch = chr(key).upper()
-            else:
-                ch = chr(key).lower()
-            self._write(chr(key))
+        # Printable characters
+        text = event.text()
+        if text:
+            self._write(text)
             return
 
         super().keyPressEvent(event)
@@ -128,10 +129,10 @@ class TerminalTab(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self.output = TerminalEdit(self.process)
-        self.output.setReadOnly(True)  # Can't type directly, all goes via process
+        self.output.setReadOnly(False)
         layout.addWidget(self.output)
 
-        self.process.start(shell, [], QProcess.OpenModeFlag.TextMode)
+        self.process.start(shell, [])
 
     def _read_out(self):
         data = self.process.readAllStandardOutput().data().decode("utf-8", errors="replace")
@@ -220,14 +221,19 @@ class MainWindow(QMainWindow):
         menubar = self.menuBar()
         menubar.setStyleSheet("QMenuBar{background:#2d2d2d;color:#ccc;} QMenuBar::item:selected{background:#333;}")
         m = menubar.addMenu("&File")
-        m.addAction("New Tab", self.new_tab, "Ctrl+N")
-        m.addAction("Close Tab", self.close_tab, "Ctrl+W")
-        m.addAction("Toggle Sidebar", self.toggle_sidebar, "Ctrl+B")
+        def mk_action(text, slot, shortcut=None):
+            a = QAction(text, self)
+            a.triggered.connect(slot)
+            if shortcut: a.setShortcut(QKeySequence(shortcut))
+            return a
+        m.addAction(mk_action("New Tab", self.new_tab, "Ctrl+N"))
+        m.addAction(mk_action("Close Tab", self.close_tab, "Ctrl+W"))
+        m.addAction(mk_action("Toggle Sidebar", self.toggle_sidebar, "Ctrl+B"))
         m.addSeparator()
-        m.addAction("Quit", self.close, "Ctrl+Q")
+        m.addAction(mk_action("Quit", self.close, "Ctrl+Q"))
         m2 = menubar.addMenu("&Tools")
-        m2.addAction("SSH Connect...", self.ssh_dialog)
-        m2.addAction("Add Project...", self.add_project_dialog)
+        m2.addAction(mk_action("SSH Connect...", self.ssh_dialog))
+        m2.addAction(mk_action("Add Project...", self.add_project_dialog))
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         self.sidebar = Sidebar()
