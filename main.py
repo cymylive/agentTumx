@@ -72,16 +72,21 @@ class TerminalTab(QWidget):
         self.output._buffer = ""
         layout.addWidget(self.output)
 
-        # Install event filter to capture all keystrokes
+        # Install event filter on self and output to capture all keystrokes
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.installEventFilter(self)
+        self.output.installEventFilter(self)
 
         self.process.start(shell, [])
+        QTimer.singleShot(100, self.setFocus)
 
     def eventFilter(self, obj, event):
-        if event.type() == event.Type.KeyPress:
+        t = event.type()
+        if t == event.Type.KeyPress:
             return self._handle_key(event)
-        if event.type() == event.Type.MouseButtonPress:
+        if t == event.Type.KeyRelease:
+            return True
+        if t in (event.Type.MouseButtonPress, event.Type.MouseButtonDblClick):
             self.setFocus()
             return True
         return super().eventFilter(obj, event)
@@ -294,6 +299,7 @@ class MainWindow(QMainWindow):
         t = TerminalTab(shell or "cmd.exe", cwd if cwd else str(Path.home()))
         idx = self.tabs.addTab(t, title)
         self.tabs.setCurrentIndex(idx)
+        t.setFocus()
         self.status.showMessage(f"标签: {title}")
         return t
 
