@@ -219,7 +219,7 @@ class MainWindow(QMainWindow):
         """)
 
         menubar = self.menuBar()
-        menubar.setStyleSheet("QMenuBar{background:#2d2d2d;color:#ccc;} QMenuBar::item:selected{background:#333;}")
+        menubar.setStyleSheet("QMenuBar{background:white;color:black;} QMenuBar::item:selected{background:#e0e0e0;} QMenu{background:white;color:black;} QMenu::item:selected{background:#007acc;color:white;}")
         m = menubar.addMenu("&文件")
         def mk_action(text, slot, shortcut=None):
             a = QAction(text, self)
